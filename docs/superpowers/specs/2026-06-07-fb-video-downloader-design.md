@@ -13,8 +13,9 @@ NAS with the least possible effort. I trigger each video from my Android phone; 
 in a folder on the NAS.
 
 **Success looks like:** I see a video in the Facebook app, tap **Share → "Save to NAS"**, and about
-a minute later the video is a file in my NAS folder. When something needs my attention (a re-login),
-my phone tells me exactly what to do.
+a minute later the video is a file in my NAS folder. **Whoever triggers a download always gets a
+clear success/failure confirmation on their own phone — never a silent failure.** When something
+needs my attention (a re-login), my phone tells me exactly what to do.
 
 **Getting those files into Google Photos / other cloud is explicitly NOT this project's job** — I
 handle that myself on the Synology (it watches the download folder and syncs onward). This keeps the
@@ -127,9 +128,12 @@ deploy, update, and reason about.
   that fires in ~1 tap.
 - **Interface:** `POST {DOWNLOAD_URL}` with header `Authorization: Bearer <token>` and a body
   carrying the shared text/URL (configured via a "Share..." global variable).
-- **Instant feedback:** the shortcut reads the HTTP response and shows it as a toast/dialog, so
-  tapping Share immediately surfaces `✅ Queued (login OK)` or `🔑 Login expired — re-upload
-  cookies` right in the share sheet, before any download finishes.
+- **Confirmation feedback (success or failure, always):** the shortcut **waits for the download to
+  finish** and shows the real outcome as a toast/dialog — `✅ Saved: <title>`, `❌ Failed: <reason>`,
+  or `🔑 Login expired` (the latter returns instantly without waiting, see §5.3). Because this is
+  just the HTTP response, it goes back to **whoever tapped Share, on their own phone**, with no
+  extra app. The shortcut's timeout is set generously (e.g. 3–5 min) to cover large videos; it
+  shows a "Saving…" state while waiting.
 - **Client setup is light (per phone, one-time):** install Tailscale + HTTP Shortcuts, sign into
   Tailscale, and **import one pre-built shortcut file** I provide (no manual configuration). After
   that, everyday use = Share → "Save to NAS" (two taps). **The wife's phone needs only these two
@@ -144,18 +148,24 @@ deploy, update, and reason about.
 
 ### 5.3 Downloader service (`fbdl`) — custom, Python/FastAPI
 - **Endpoints:**
-  - `POST /download` → validate bearer token, extract+normalize the URL from the shared text,
-    enqueue a job, and return **202 Accepted immediately with the current cached cookie status**
-    (so the phone shortcut shows instant `✅ Queued (login OK)` / `🔑 Login expired` even on
-    cellular, without waiting for the download). The final result is reported later via ntfy. The
-    cached `cookie_status` (last-known good/stale + timestamp) is maintained by the periodic probe
-    and updated after each real download attempt.
+  - `POST /download` → **synchronous** (this is what guarantees the triggerer is confirmed):
+    validate bearer token → `normalize()` the URL → if the cached cookie status is already
+    known-stale, **fast-fail instantly** with `🔑 Login expired` (no pointless wait); otherwise run
+    the download to completion and return the **final result** — `✅ Saved: <title>`,
+    `❌ Failed: <reason>` (reason from the classifier), or `🔑 Login expired` if the attempt itself
+    reveals stale cookies. The phone shortcut displays whatever comes back, so **the person who
+    triggered it is always confirmed either way, on their own phone.** Requests are serialized by a
+    single-flight lock (simultaneous shares from both phones queue briefly). The cached
+    `cookie_status` (last-known good/stale + timestamp) is updated from each attempt and from the
+    scheduled probe, and drives the fast-fail above plus the status-page indicator.
   - `POST /cookies` → accept an uploaded `cookies.txt`, validate it's Netscape format, write it
     atomically to `COOKIES_PATH`, then run a validation probe and report pass/fail.
   - `GET /` → minimal status page: last N jobs (ok/failed + reason), the cookies-upload form, and a
     "cookies last refreshed / last validated" indicator.
   - `GET /health` → liveness.
-- **Worker:** processes one job at a time (single-user). Steps: download → classify → notify.
+- **Download handler:** runs synchronously under a single-flight lock (single user, predictable).
+  Steps: normalize → yt-dlp → classify result → return it to the caller, and mirror failures (and
+  optionally successes) to ntfy.
 - **Depends on:** cookies.txt, yt-dlp+curl_cffi, ffmpeg.
 
 ### 5.4 URL normalization
@@ -203,10 +213,15 @@ deploy, update, and reason about.
   File Station. **This folder is the project's deliverable**; my Synology handles syncing it onward.
 - **Naming:** `%(title)s [%(id)s].%(ext)s`, container `mp4` (merged via ffmpeg).
 
-### 5.8 Notification — two layers
-1. **Instant, in the share sheet (no extra app):** the `/download` response lets the shortcut show
-   `✅ Queued (login OK)` / `🔑 Login expired` the moment Share is tapped.
-2. **Async push via ntfy:** for later outcomes — download finished, or a hard failure.
+### 5.8 Notification — confirmation to the triggerer + maintenance push
+1. **Primary — the synchronous `/download` response (guaranteed, no extra app):** whoever taps
+   Share **always** gets the real outcome back on *their own* phone — `✅ Saved: <title>`,
+   `❌ Failed: <reason>`, or `🔑 Login expired`. This is the "confirmed either way" guarantee, and it
+   needs nothing installed beyond the shortcut, so it covers my wife's phone automatically.
+2. **Secondary — ntfy push (my phone):** the scheduled stale-cookie alert (so I refresh *before*
+   anyone hits a failure), a mirror of any download failure (so I'm aware), and a backstop for the
+   rare case where a very large video exceeds the shortcut's timeout (the file still finishes on the
+   NAS and ntfy reports the final result).
 
 **About ntfy:** it is **push notifications, not SMS/texting** — no phone number, no carrier. The NAS
 sends one `curl` POST to a public `ntfy.sh` topic with an unguessable name; the ntfy Android app
@@ -219,20 +234,24 @@ not. (Self-hosting ntfy on the NAS is a future privacy option; not needed now.)
 ## 6. Data flow
 
 **Happy path:**
-1. Phone: Share → "Save to NAS" → `POST /download {url}` + Bearer token (over Tailscale).
-2. Service: validate token → `normalize()` the URL → enqueue → **202 + cached cookie status**
-   (shortcut shows `✅ Queued (login OK)` instantly).
-3. Worker: `yt-dlp --cookies --impersonate chrome ... <url>` → file written to `/downloads`.
-4. Worker: ntfy "✅ Saved: <title>" (success ping).
+1. Phone: Share → "Save to NAS" → `POST /download {url}` + Bearer token (over Tailscale). The
+   shortcut shows "Saving…" while it waits.
+2. Service: validate token → `normalize()` → (fast-fail `🔑` if cookies already known stale).
+3. Service: `yt-dlp --cookies --impersonate chrome ... <url>` → file written to `/downloads`.
+4. Service: returns **`✅ Saved: <title>`** to the phone (the triggerer sees it directly); optional
+   ntfy success ping to my phone.
 5. My Synology picks the file up from the folder and syncs it onward (outside this system).
 
-**Failure paths:**
-- **STALE_COOKIES** → ntfy "🔑 Facebook login expired — open <nas-url> and upload fresh cookies";
-  cached status flips to stale.
-- **EXTRACTOR_BROKEN** → ntfy "⚠️ Facebook download broke (extractor). Try updating yt-dlp." (Do
-  not prompt for cookies.)
-- **VIDEO_UNSUPPORTED** → ntfy "🚫 That video couldn't be downloaded. Try the video's own 'Copy
-  link' instead of a share wrapper."
+**Failure paths — the triggerer always gets the reason back on their phone, AND it mirrors to my ntfy:**
+- **STALE_COOKIES** → phone: `🔑 Login expired — ask John to refresh cookies`; my ntfy:
+  "🔑 Facebook login expired — open <nas-url> and upload fresh cookies"; cached status flips stale.
+- **EXTRACTOR_BROKEN** → phone: `⚠️ Download broke (Facebook changed) — John needs to update`; my
+  ntfy: "⚠️ extractor broke — update yt-dlp." (Do not prompt for cookies.)
+- **VIDEO_UNSUPPORTED** → phone: `🚫 Couldn't download — try the video's own 'Copy link'`. (No
+  maintenance action needed.)
+- **OTHER / timeout** → phone: `❌ Failed: <short reason>`; my ntfy carries details. If a very large
+  video exceeds the shortcut timeout, the file still completes on the NAS and ntfy reports the
+  final result.
 
 ---
 
@@ -364,11 +383,13 @@ already reads.
 
 ### Journey B — Normal use (the 95% case, ~2 taps)
 1. My wife is scrolling the daycare group on her phone and sees a video of our kid.
-2. She taps **Share → "Save to NAS."**
-3. A toast shows **"✅ Queued (login OK)."** She's done and back to scrolling — she never thinks
-   about cookies, the NAS, or anything else; to her it's just a share button.
-4. Seconds-to-a-minute later the video file lands in the NAS folder. My Synology syncs it onward
-   (to Google Photos / wherever I set up) on its own. I optionally get an "✅ Saved" ntfy ping.
+2. She taps **Share → "Save to NAS."** The shortcut briefly shows **"Saving…"**.
+3. A few seconds later it shows **"✅ Saved: <title>"** right on her phone — she *knows* it worked,
+   every time. If it had failed she'd instead see a plain-language reason (e.g. "🔑 Login expired —
+   ask John to refresh"), so she's never left guessing. To her it's just a share button that always
+   tells her the result.
+4. The file is in the NAS folder; my Synology syncs it onward on its own. I optionally also get an
+   "✅ Saved" ntfy ping.
 
 ### Journey C — The re-login chore (~weekly, ~1 min, the only recurring task)
 1. Cookies expire; the scheduled probe on the NAS notices.
