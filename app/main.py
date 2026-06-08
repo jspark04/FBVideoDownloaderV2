@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import html
+import os
 import secrets
 import threading
 
@@ -85,6 +86,13 @@ async def download(
     # only by POST /cookies or the scheduled probe. Do not "fix" this to retry.
     if state.cookie.ok is False:
         return PlainTextResponse("🔑 Login expired — ask John to refresh cookies")
+
+    # No cookies on disk yet (first run, or file removed): there's no login to
+    # use, so tell the user to upload rather than running a doomed download.
+    if not os.path.exists(settings.cookies_path):
+        msg = "🔑 No Facebook login yet — upload cookies at the status page"
+        state.record_job(url, Category.STALE_COOKIES.value, msg)
+        return PlainTextResponse(msg)
 
     def _job():
         with _download_lock:

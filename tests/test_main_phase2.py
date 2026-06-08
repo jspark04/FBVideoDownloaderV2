@@ -40,17 +40,24 @@ def test_fast_fail_when_cookies_known_stale(monkeypatch):
     main_mod.state.set_cookie(CookieStatus(None, "reset"))  # cleanup
 
 
-def test_download_records_job_and_sets_cookie_ok(monkeypatch):
+def test_download_records_job_and_sets_cookie_ok(tmp_path, monkeypatch):
     main_mod.state.set_cookie(CookieStatus(None, "reset"))
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    cfg = Settings(_env_file=None, auth_token="testtoken", ntfy_url="", cookies_path=str(cookies))
+    main_mod.app.dependency_overrides[get_settings] = lambda: cfg
     monkeypatch.setattr(
         main_mod, "run_download",
-        lambda url, cfg: DownloadResult(Category.OK, "clip.mp4", "✅ Saved: clip.mp4", ""),
+        lambda url, c: DownloadResult(Category.OK, "clip.mp4", "✅ Saved: clip.mp4", ""),
     )
     monkeypatch.setattr(main_mod, "send_ntfy", lambda *a, **k: True)
-    r = client.post("/download", content="https://www.facebook.com/watch/?v=1", headers=AUTH)
-    assert r.text == "✅ Saved: clip.mp4"
-    assert main_mod.state.cookie.ok is True
-    assert any("clip.mp4" in j.message for j in main_mod.state.jobs)
+    try:
+        r = client.post("/download", content="https://www.facebook.com/watch/?v=1", headers=AUTH)
+        assert r.text == "✅ Saved: clip.mp4"
+        assert main_mod.state.cookie.ok is True
+        assert any("clip.mp4" in j.message for j in main_mod.state.jobs)
+    finally:
+        main_mod.app.dependency_overrides[get_settings] = _override_settings
 
 
 def test_cookies_upload_rejects_bad_format():
@@ -95,3 +102,22 @@ def test_probe_once_alerts_on_transition_to_stale(monkeypatch):
     m._probe_once(cfg)
     assert m.state.cookie.ok is False
     assert "expired" in sent["msg"].lower()
+
+
+def test_download_missing_cookies_file_prompts_upload(tmp_path, monkeypatch):
+    # No cookies.txt on disk yet (first run): the user should be told to upload
+    # cookies, NOT see a generic failure — and we must not attempt a doomed download.
+    cfg = Settings(_env_file=None, auth_token="testtoken", cookies_path=str(tmp_path / "nope.txt"))
+    main_mod.app.dependency_overrides[get_settings] = lambda: cfg
+
+    def _boom(url, c):
+        raise AssertionError("must not attempt download when cookies file is missing")
+
+    monkeypatch.setattr(main_mod, "run_download", _boom)
+    try:
+        r = client.post("/download", content="https://www.facebook.com/watch/?v=1", headers=AUTH)
+        assert r.status_code == 200
+        assert "🔑" in r.text
+        assert "upload" in r.text.lower()
+    finally:
+        main_mod.app.dependency_overrides[get_settings] = _override_settings  # restore

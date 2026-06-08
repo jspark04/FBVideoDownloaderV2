@@ -32,21 +32,35 @@ def test_download_no_url_returns_message():
     assert "No link" in r.text
 
 
-def test_download_success(monkeypatch):
+def test_download_success(tmp_path, monkeypatch):
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    cfg = Settings(_env_file=None, auth_token="testtoken", cookies_path=str(cookies))
+    app.dependency_overrides[get_settings] = lambda: cfg
     monkeypatch.setattr(
         main_mod, "run_download",
-        lambda url, cfg: DownloadResult(Category.OK, "clip.mp4", "✅ Saved: clip.mp4", ""),
+        lambda url, c: DownloadResult(Category.OK, "clip.mp4", "✅ Saved: clip.mp4", ""),
     )
-    r = client.post("/download", content="https://www.facebook.com/watch/?v=1", headers=AUTH)
-    assert r.status_code == 200
-    assert r.text == "✅ Saved: clip.mp4"
+    try:
+        r = client.post("/download", content="https://www.facebook.com/watch/?v=1", headers=AUTH)
+        assert r.status_code == 200
+        assert r.text == "✅ Saved: clip.mp4"
+    finally:
+        app.dependency_overrides[get_settings] = _override_settings
 
 
-def test_download_failure_still_200_with_message(monkeypatch):
+def test_download_failure_still_200_with_message(tmp_path, monkeypatch):
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    cfg = Settings(_env_file=None, auth_token="testtoken", cookies_path=str(cookies))
+    app.dependency_overrides[get_settings] = lambda: cfg
     monkeypatch.setattr(
         main_mod, "run_download",
-        lambda url, cfg: DownloadResult(Category.STALE_COOKIES, None, "🔑 Login expired — ask John to refresh cookies", ""),
+        lambda url, c: DownloadResult(Category.STALE_COOKIES, None, "🔑 Login expired — ask John to refresh cookies", ""),
     )
-    r = client.post("/download", content="https://www.facebook.com/watch/?v=1", headers=AUTH)
-    assert r.status_code == 200
-    assert "Login expired" in r.text
+    try:
+        r = client.post("/download", content="https://www.facebook.com/watch/?v=1", headers=AUTH)
+        assert r.status_code == 200
+        assert "Login expired" in r.text
+    finally:
+        app.dependency_overrides[get_settings] = _override_settings
