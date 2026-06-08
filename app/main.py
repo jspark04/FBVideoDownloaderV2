@@ -1,3 +1,4 @@
+import html
 import threading
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -76,7 +77,10 @@ async def upload_cookies(
     if not ok:
         return PlainTextResponse(f"❌ Not a valid cookies.txt: {reason}")
     write_cookies_atomic(settings.cookies_path, body)
-    status = await run_in_threadpool(lambda: probe_cookies(settings))
+    try:
+        status = await run_in_threadpool(lambda: probe_cookies(settings))
+    except Exception as exc:  # never 500 after the file is already saved
+        status = CookieStatus(None, f"probe error: {exc}")
     state.set_cookie(status)
     if status.ok:
         return PlainTextResponse("✅ Cookies saved and verified — you're good.")
@@ -89,9 +93,10 @@ async def upload_cookies(
 def status_page() -> HTMLResponse:
     c = state.cookie
     badge = {True: "🟢 valid", False: "🔴 expired", None: "⚪ unknown"}[c.ok]
+    jobs = list(state.jobs)
     rows = "".join(
-        f"<tr><td>{j.when}</td><td>{j.category}</td><td>{j.message}</td></tr>"
-        for j in state.jobs
+        f"<tr><td>{html.escape(j.when)}</td><td>{html.escape(j.category)}</td><td>{html.escape(j.message)}</td></tr>"
+        for j in jobs
     ) or "<tr><td colspan=3>no downloads yet</td></tr>"
     return HTMLResponse(f"""<!doctype html>
 <html><head><meta name=viewport content="width=device-width,initial-scale=1">
@@ -101,7 +106,7 @@ table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ccc;padding
 .box{{border:1px solid #ccc;border-radius:8px;padding:1rem;margin:1rem 0}}</style></head>
 <body>
 <h1>fbdl — Facebook → NAS</h1>
-<div class=box><b>Facebook login:</b> {badge} <small>({c.detail})</small></div>
+<div class=box><b>Facebook login:</b> {badge} <small>({html.escape(c.detail)})</small></div>
 <div class=box>
   <b>Refresh cookies</b>
   <p>Export <code>cookies.txt</code> from your browser, then drop its contents here:</p>

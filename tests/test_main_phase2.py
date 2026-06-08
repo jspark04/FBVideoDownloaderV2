@@ -1,3 +1,4 @@
+import pytest
 import app.main as main_mod
 from app.classify import Category
 from app.config import Settings, get_settings
@@ -19,6 +20,13 @@ GOOD_COOKIES = (
     "# Netscape HTTP Cookie File\n"
     ".facebook.com\tTRUE\t/\tTRUE\t1999999999\tc_user\t123\n"
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_state():
+    main_mod.state.set_cookie(CookieStatus(None, "reset"))
+    main_mod.state.jobs.clear()
+    yield
 
 
 def test_fast_fail_when_cookies_known_stale(monkeypatch):
@@ -66,3 +74,10 @@ def test_status_page_renders():
     r = client.get("/")
     assert r.status_code == 200
     assert "fbdl" in r.text.lower() or "cookie" in r.text.lower()
+
+
+def test_status_page_escapes_job_message():
+    main_mod.state.record_job("https://fb/v/1", "ok", "✅ Saved: <script>alert(1)</script>.mp4")
+    r = client.get("/")
+    assert "<script>alert(1)</script>" not in r.text
+    assert "&lt;script&gt;" in r.text
