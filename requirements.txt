@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+yt-dlp[default,curl-cffi]
+httpx
+pydantic-settings
+python-multipart
