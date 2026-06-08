@@ -126,6 +126,13 @@ thing to deploy, update, and reason about.**
   that fires in ~1 tap.
 - **Interface:** `POST {DOWNLOAD_URL}` with header `Authorization: Bearer <token>` and a body
   carrying the shared text/URL (configured via a "Share..." global variable).
+- **Instant feedback:** the shortcut reads the HTTP response and shows it as a toast/dialog, so
+  tapping Share immediately surfaces `✅ Queued (login OK)` or `🔑 Login expired — re-upload
+  cookies` right in the share sheet, before any download finishes.
+- **Client setup is light (per phone, one-time):** install Tailscale + HTTP Shortcuts, sign into
+  Tailscale, and **import one pre-built shortcut file** I provide (no manual configuration). After
+  that, everyday use = Share → "Save to NAS" (two taps). **The wife's phone needs only these two
+  apps** (no ntfy, no maintenance role).
 - **Depends on:** Tailscale connectivity to the NAS; the service's bearer token.
 
 ### 5.2 Transport — Tailscale
@@ -139,8 +146,12 @@ thing to deploy, update, and reason about.**
 - **What:** Receives the trigger, runs the download/upload/notify pipeline.
 - **Endpoints:**
   - `POST /download` → validate bearer token, extract+normalize the URL from the shared text,
-    enqueue a job, return **202 Accepted** immediately (so the phone shortcut gets a fast OK even
-    on cellular). Result is reported later via ntfy.
+    enqueue a job, and return **202 Accepted immediately with the current cached cookie status**
+    (so the phone shortcut shows instant `✅ Queued (login OK)` / `🔑 Login expired` even on
+    cellular, without waiting for the download). The final download/upload result is reported later
+    via ntfy. The cached `cookie_status` (last-known good/stale + timestamp) is maintained by the
+    periodic probe and updated after each real download attempt — so the instant response is
+    accurate without adding probe latency to the trigger.
   - `POST /cookies` → accept an uploaded `cookies.txt`, validate it's Netscape format, write it
     atomically to `COOKIES_PATH`. (This is the "painless refresh" path.)
   - `GET /` → minimal status page: last N jobs (ok/failed + reason), a cookies-upload form, and a
@@ -195,19 +206,30 @@ thing to deploy, update, and reason about.**
   add to albums it created; the backend is effectively append-only (it can't read my existing
   library); items appear in the timeline dated by capture time.
 
-### 5.9 Notification — ntfy
-- **What:** One `curl` POST to a public `ntfy.sh` topic with an unguessable name; the ntfy Android
-  app subscribes to it. Used for: stale cookies (high priority), checkpoint/account lock
-  (high priority), hard download failures, and optionally success confirmations.
-- **Why:** zero SDK, free, best battery profile, one HTTP call. (Self-hosted ntfy on the NAS is a
-  future privacy option; not needed now since alert text is non-sensitive.)
+### 5.9 Notification — two layers
+Feedback comes in two complementary layers so the most important signal (login status) is always
+instant, and slower outcomes still reach the phone:
+
+1. **Instant, in the share sheet (no extra app):** the `/download` response (§5.3) lets the
+   shortcut show `✅ Queued (login OK)` / `🔑 Login expired` the moment Share is tapped.
+2. **Async push via ntfy:** for outcomes that happen later — download finished, hard failure, or a
+   Google Photos upload that failed minutes after the file saved.
+
+**About ntfy:** it is **push notifications, not SMS/texting** — no phone number, no carrier. The
+NAS sends one `curl` POST to a public `ntfy.sh` topic with an unguessable name; the ntfy Android
+app (subscribed to that topic) shows the notification. It is **free** for personal use (paid tiers
+are only for high-volume/commercial senders), open-source, zero SDK, and has a good battery
+profile. Only **my** phone needs the ntfy app (it carries the maintenance alerts); my wife's phone
+does not. (Self-hosting ntfy on the NAS is a future privacy option; not needed now since the alert
+text is non-sensitive.)
 
 ---
 
 ## 6. Data flow (happy path)
 
 1. Phone: Share → "Save to NAS" → `POST /download {url}` + Bearer token (over Tailscale).
-2. Service: validate token → `normalize()` the URL → enqueue → **202 Accepted** to phone.
+2. Service: validate token → `normalize()` the URL → enqueue → **202 Accepted to phone with cached
+   cookie status** (shortcut shows `✅ Queued (login OK)` instantly).
 3. Worker: `yt-dlp --cookies --impersonate chrome ... <url>` → file written to `/downloads`.
 4. Worker: `rclone copy` the file to `gphotos:album/<album>`.
 5. Worker: ntfy "✅ Saved: <title>" (optional success ping).
@@ -279,9 +301,11 @@ thing to deploy, update, and reason about.**
    `fbdl-7f3a9c2e`); set `NTFY_URL` to match.
 4. **Build & run the container** via Container Manager → Project (docker-compose), with the env
    and volumes above.
-5. **HTTP Shortcuts (phone):** create a global "Share..." variable; create a POST shortcut to the
-   `/download` URL with `Authorization: Bearer <token>` and the shared text as the body; enable
-   the Direct-Share tile.
+5. **Phones (light, ~2 min each):** on each phone (mine + wife's) install **Tailscale** (sign in,
+   same account) and **HTTP Shortcuts**, then **import the pre-built shortcut file** I provide
+   (it already contains the URL, bearer token, "Share..." body wiring, and response-display). Only
+   my phone also installs the **ntfy** app and subscribes to the topic. No manual shortcut
+   configuration on either phone.
 6. **First Facebook login (cookies):** on my home browser, log into Facebook (the daycare-group
    account), export `cookies.txt` with the cookie extension, and upload it at `http://<nas>:<port>/`.
 
@@ -331,7 +355,9 @@ file the downloader already reads. (Full technical notes captured in research; s
 ## 13. Open assumptions to confirm during review
 - **Primary Facebook account** is used (a dedicated second account is impractical for a vetted
   daycare group and carries its own flagging risk). 
-- **Public `ntfy.sh`** is acceptable for alerts (text is non-sensitive; topic name is unguessable).
+- **Public `ntfy.sh`** for async push alerts — **confirmed** (free push, not SMS; non-sensitive
+  text; unguessable topic; only my phone subscribes). Plus instant in-share-sheet feedback on every
+  trigger.
 - **rclone uploads into a single album** (`Daycare Videos`); fine that it can't write to a
   pre-existing manually-made album.
 - Tech stack: **Python + FastAPI** for the service (small, async-friendly, easy to test).
