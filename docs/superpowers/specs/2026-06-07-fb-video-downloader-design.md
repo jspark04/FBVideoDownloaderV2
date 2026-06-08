@@ -179,9 +179,24 @@ deploy, update, and reason about.
   <canary-url>`) run **from the NAS**, on a schedule. If it classifies as STALE_COOKIES → ntfy
   "Facebook login expired — upload fresh cookies," and the cached status flips so the next share-
   sheet trigger shows `🔑` instantly.
-- **Refresh:** I export `cookies.txt` from my home browser using the **"Get cookies.txt LOCALLY"**
-  (Chrome) or **"cookies.txt"** (Firefox) extension, then upload it via the status page. ~30 sec.
-- **Validation on upload:** after writing, run the probe; show pass/fail on the page.
+
+- **Refresh — designed to be a ~1-minute job with the fewest moving parts:**
+  1. **Pin the cookie extension** in my home browser once: **"Get cookies.txt LOCALLY"** (Chrome)
+     or **"cookies.txt"** (Firefox). Refreshing is then: on any Facebook tab, click the extension →
+     **Export** (downloads `cookies.txt`).
+  2. **Bookmark the status page** (the Tailscale URL). The ntfy stale alert also carries a tap
+     action that opens this page directly.
+  3. On the status page, **drag-and-drop the file** (or pick it, or paste the raw text) → it writes
+     atomically, runs the validation probe, and shows ✅/❌ on the spot.
+  - **Phone-only fallback:** Firefox for Android supports the same "cookies.txt" extension, so in a
+    pinch I can export + upload entirely from my phone — no PC required.
+  - **File Station fallback:** the service also watches `/config` for a freshly-dropped
+    `cookies.txt`, so dropping the file in via Synology File Station / Drive works too.
+- **Validation on upload:** after writing, run the probe; show pass/fail on the page so I know it
+  worked before walking away.
+- **Making this nearly disappear:** if even ~1 min/week becomes annoying, §11's warm-session keeper
+  removes the manual export almost entirely — and it writes to this same `cookies.txt`, so it's a
+  drop-in upgrade.
 
 ### 5.7 Storage — NAS folder
 - **What:** Finished files land in `/downloads` (bind-mounted to a NAS shared folder) — visible in
@@ -244,6 +259,15 @@ not. (Self-hosting ntfy on the NAS is a future privacy option; not needed now.)
 | `NOTIFY_ON_SUCCESS` | send a ping on success too | `true` |
 | `PORT` | service port | `8080` |
 
+### `.env` file (single source of truth for config)
+All of the above live in a **`.env` file** next to the compose file (e.g.
+`/volume1/docker/fbdl/.env`). The Container Manager compose references it (`env_file: .env`), so
+updating any setting = edit one plain text file and restart the container — no editing the compose
+or the container. The repo ships a committed **`.env.example`** (with placeholders and a comment on
+how to generate `AUTH_TOKEN`, e.g. `openssl rand -hex 32`); I copy it to `.env` and fill in my
+values. `.env` itself is **git-ignored** (it holds the bearer token). Secrets like `cookies.txt`
+stay out of `.env` — they live on the `/config` volume.
+
 ### Volumes (bind mounts to NAS shared folders, on one filesystem)
 | Container path | NAS path (example) | Mode | Holds |
 |---|---|---|---|
@@ -258,8 +282,10 @@ not. (Self-hosting ntfy on the NAS is a future privacy option; not needed now.)
    Tailscale app on each phone with the **same** account. Note the NAS's MagicDNS name.
 2. **ntfy:** install the ntfy Android app (my phone); subscribe to an unguessable topic (e.g.
    `fbdl-7f3a9c2e`); set `NTFY_URL` to match.
-3. **Build & run the container** via Container Manager → Project (docker-compose), with the env and
-   volumes above.
+3. **Build & run the container** via Container Manager → Project (docker-compose): copy
+   `.env.example` → `.env` in the project folder, fill in `AUTH_TOKEN` (`openssl rand -hex 32`),
+   `NTFY_URL`, and `CANARY_URL`, then create/start the project (it reads `.env` and the volumes
+   above). Updating config later = edit `.env`, restart.
 4. **Phones (light, ~2 min each):** install **Tailscale** + **HTTP Shortcuts**, then **import the
    pre-built shortcut file** I provide (URL, bearer token, "Share..." body wiring, and response-
    display already set). Only my phone also installs ntfy.
@@ -316,3 +342,47 @@ already reads.
   unguessable topic; only my phone subscribes). Plus instant in-share-sheet feedback every trigger.
 - **Tech stack: Python + FastAPI** for the service (small, async-friendly, easy to test).
 - **Onward cloud/Google Photos sync is handled by me on the Synology** — not part of this build.
+
+---
+
+## 14. End-to-end user journeys
+
+### Journey A — First-time setup (one-time, ~20 min total, mostly waiting)
+1. **NAS — Tailscale:** Package Center → install Tailscale → sign in. (~3 min)
+2. **NAS — container:** Container Manager → Project → "fbdl" → paste the compose file → copy
+   `.env.example` to `.env`, set `AUTH_TOKEN` (`openssl rand -hex 32`), `NTFY_URL`
+   (`https://ntfy.sh/<my-secret-topic>`), `CANARY_URL` → Start. (~5 min)
+3. **Phones (mine + wife's):** install Tailscale (sign in, same account) + HTTP Shortcuts → open
+   the shortcut-import link/QR I prepared → done. My phone also: install ntfy, subscribe to the
+   topic. (~2 min each)
+4. **First Facebook login:** on my PC (logged into the daycare-group Facebook account), click the
+   pinned cookie extension → Export → open the bookmarked fbdl status page (Tailscale URL) →
+   drag the `cookies.txt` in → see ✅ "Cookies valid." (~2 min)
+5. **Smoke test:** open Facebook on my phone → a group video → Share → "Save to NAS" → see
+   "✅ Queued (login OK)" → ~a minute later the `.mp4` is in the NAS folder and ntfy says
+   "✅ Saved: <title>." Setup done.
+
+### Journey B — Normal use (the 95% case, ~2 taps)
+1. My wife is scrolling the daycare group on her phone and sees a video of our kid.
+2. She taps **Share → "Save to NAS."**
+3. A toast shows **"✅ Queued (login OK)."** She's done and back to scrolling — she never thinks
+   about cookies, the NAS, or anything else; to her it's just a share button.
+4. Seconds-to-a-minute later the video file lands in the NAS folder. My Synology syncs it onward
+   (to Google Photos / wherever I set up) on its own. I optionally get an "✅ Saved" ntfy ping.
+
+### Journey C — The re-login chore (~weekly, ~1 min, the only recurring task)
+1. Cookies expire; the scheduled probe on the NAS notices.
+2. My phone gets an ntfy push: **"🔑 Facebook login expired — tap to refresh"** (tapping opens the
+   status page). Belt-and-suspenders: if anyone taps Share before I fix it, they immediately see
+   **"🔑 Login expired"** instead of a silent failure, so nothing fails mysteriously.
+3. At my PC: open the bookmarked status page → on a Facebook tab click the pinned cookie extension
+   → Export → drag `cookies.txt` onto the page → ✅ "Cookies valid." (~1 min) *(Or do the same from
+   Firefox on my phone if I'm not at the PC.)*
+4. Any video that failed during the stale window: just re-share it. Back to Journey B.
+
+### Journey D — A video won't download (occasional)
+1. I share a video; the result is **"🚫 couldn't download (unsupported)"** (often a Reel or a
+   `/share/` wrapper link).
+2. Fix: open the video itself in Facebook, use its own **"Copy link,"** and share that — canonical
+   links succeed far more often. If it's an extractor break instead (**"⚠️ extractor"**), it means
+   Facebook changed something; I update the container's yt-dlp and retry (documented in the runbook).
