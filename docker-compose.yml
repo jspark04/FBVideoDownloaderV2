@@ -1,0 +1,11 @@
+services:
+  fbdl:
+    build: .
+    container_name: fbdl
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/config         # holds cookies.txt (and Phase 2 state)
+      - ./downloads:/downloads   # finished videos land here (the deliverable)
+    restart: unless-stopped
