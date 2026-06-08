@@ -19,3 +19,10 @@ def test_settings_missing_token_raises(monkeypatch):
     import pytest
     with pytest.raises(Exception):
         Settings(_env_file=None)
+
+
+def test_settings_empty_token_raises(monkeypatch):
+    monkeypatch.setenv("AUTH_TOKEN", "")
+    import pytest
+    with pytest.raises(Exception):
+        Settings(_env_file=None)

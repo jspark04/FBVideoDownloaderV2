@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import html
+import secrets
 import threading
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -59,7 +60,7 @@ def require_token(
     authorization: str = Header(default=""),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    if authorization != f"Bearer {settings.auth_token}":
+    if not secrets.compare_digest(authorization, f"Bearer {settings.auth_token}"):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -80,6 +81,8 @@ async def download(
         return PlainTextResponse("❌ No link found in what you shared")
 
     # Fast-fail without a doomed download if we already know the login is dead.
+    # Intentional: /download does NOT self-recover — the stale flag is cleared
+    # only by POST /cookies or the scheduled probe. Do not "fix" this to retry.
     if state.cookie.ok is False:
         return PlainTextResponse("🔑 Login expired — ask John to refresh cookies")
 
