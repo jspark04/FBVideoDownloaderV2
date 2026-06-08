@@ -81,3 +81,17 @@ def test_status_page_escapes_job_message():
     r = client.get("/")
     assert "<script>alert(1)</script>" not in r.text
     assert "&lt;script&gt;" in r.text
+
+
+def test_probe_once_alerts_on_transition_to_stale(monkeypatch):
+    import app.main as m
+    from app.config import Settings
+    from app.probe import CookieStatus
+    m.state.set_cookie(CookieStatus(True, "ok"))
+    monkeypatch.setattr(m, "probe_cookies", lambda cfg: CookieStatus(False, "cookies expired"))
+    sent = {}
+    monkeypatch.setattr(m, "send_ntfy", lambda settings, msg, **k: sent.setdefault("msg", msg) or True)
+    cfg = Settings(_env_file=None, auth_token="x", ntfy_url="https://ntfy.sh/t")
+    m._probe_once(cfg)
+    assert m.state.cookie.ok is False
+    assert "expired" in sent["msg"].lower()

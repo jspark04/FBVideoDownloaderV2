@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import html
 import threading
 
@@ -14,7 +16,42 @@ from .probe import CookieStatus, probe_cookies
 from .state import state
 from .urls import extract_url
 
-app = FastAPI(title="fbdl")
+PROBE_INTERVAL_SECONDS = 6 * 60 * 60  # every 6 hours
+
+
+def _probe_once(settings) -> None:
+    was_ok = state.cookie.ok
+    status = probe_cookies(settings)
+    state.set_cookie(status)
+    # Alert only on a fresh transition into "stale" (avoid repeat spam).
+    if status.ok is False and was_ok is not False:
+        send_ntfy(
+            settings,
+            "🔑 Facebook login expired — open fbdl and upload fresh cookies",
+            priority="high", tags=["key"],
+        )
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(app_):
+    settings = get_settings()
+
+    async def _loop():
+        while True:
+            with contextlib.suppress(Exception):
+                await run_in_threadpool(_probe_once, settings)
+            await asyncio.sleep(PROBE_INTERVAL_SECONDS)
+
+    task = asyncio.create_task(_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+app = FastAPI(title="fbdl", lifespan=_lifespan)
 _download_lock = threading.Lock()
 
 
