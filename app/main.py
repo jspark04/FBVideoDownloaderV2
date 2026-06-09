@@ -156,6 +156,15 @@ table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ccc;padding
 <h1>fbdl — Facebook → NAS</h1>
 <div class=box><b>Facebook login:</b> {badge} <small>({html.escape(c.detail)})</small></div>
 <div class=box>
+  <b>Download a video</b>
+  <p>In Facebook, tap the video's <b>Copy link</b>, then paste it here:</p>
+  <form id=dlf>
+    <input type=text id=dlurl style="width:100%" placeholder="https://www.facebook.com/...">
+    <br><br>
+    <button type=submit>Download</button> <span id=dlmsg></span>
+  </form>
+</div>
+<div class=box>
   <b>Refresh cookies</b>
   <p>Export <code>cookies.txt</code> from your browser, then drop its contents here:</p>
   <form id=f>
@@ -177,6 +186,14 @@ f.onsubmit = async (e) => {{
   msg.textContent = 'uploading...';
   const r = await fetch('/cookies', {{method:'POST', headers:{{'Authorization':'Bearer '+tok}}, body}});
   msg.textContent = await r.text();
+}};
+dlf.onsubmit = async (e) => {{
+  e.preventDefault();
+  dlmsg.textContent = 'downloading… this can take a moment';
+  try {{
+    const r = await fetch('/download', {{method:'POST', headers:{{'Authorization':'Bearer '+tok}}, body: dlurl.value}});
+    dlmsg.textContent = await r.text();
+  }} catch (err) {{ dlmsg.textContent = '❌ ' + err; }}
 }};
 </script>
 </body></html>""")

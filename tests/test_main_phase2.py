@@ -83,6 +83,16 @@ def test_status_page_renders():
     assert "fbdl" in r.text.lower() or "cookie" in r.text.lower()
 
 
+def test_status_page_has_download_box():
+    # Phones can't "Share to other apps" reliably, so the page must offer a
+    # paste-a-link download box (Copy link in FB -> paste here -> Download).
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "download a video" in r.text.lower()  # the box heading
+    assert "dlurl" in r.text                       # the paste input
+    assert "/download" in r.text                   # JS posts to the download endpoint
+
+
 def test_status_page_escapes_job_message():
     main_mod.state.record_job("https://fb/v/1", "ok", "✅ Saved: <script>alert(1)</script>.mp4")
     r = client.get("/")
