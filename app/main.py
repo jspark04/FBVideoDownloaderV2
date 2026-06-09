@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import html
+import logging
 import os
 import secrets
 import threading
@@ -17,6 +18,8 @@ from .notify import send_ntfy
 from .probe import CookieStatus, probe_cookies
 from .state import state
 from .urls import extract_url
+
+logger = logging.getLogger("fbdl")
 
 PROBE_INTERVAL_SECONDS = 6 * 60 * 60  # every 6 hours
 
@@ -108,6 +111,12 @@ async def download(
     else:
         if result.category == Category.STALE_COOKIES:
             state.set_cookie(CookieStatus(False, "cookies expired"))
+        # Make "check the server logs" actually mean something: record the real
+        # yt-dlp error (last 1000 chars) so `docker logs fbdl` shows the reason.
+        logger.warning(
+            "download failed [%s] %s\n%s",
+            result.category.value, url, (result.raw or "")[-1000:],
+        )
         # Mirror every failure to my phone for awareness.
         send_ntfy(settings, f"{result.message}\n{url}", priority="high", tags=["warning"])
 

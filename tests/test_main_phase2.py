@@ -83,6 +83,26 @@ def test_status_page_renders():
     assert "fbdl" in r.text.lower() or "cookie" in r.text.lower()
 
 
+def test_download_failure_logs_raw_error(tmp_path, monkeypatch, caplog):
+    import logging
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    cfg = Settings(_env_file=None, auth_token="testtoken", ntfy_url="", cookies_path=str(cookies))
+    main_mod.app.dependency_overrides[get_settings] = lambda: cfg
+    monkeypatch.setattr(
+        main_mod, "run_download",
+        lambda url, c: DownloadResult(Category.OTHER, None, "❌ Failed — check the server logs", "ERROR: facebook boom xyz123"),
+    )
+    monkeypatch.setattr(main_mod, "send_ntfy", lambda *a, **k: True)
+    try:
+        with caplog.at_level(logging.WARNING, logger="fbdl"):
+            r = client.post("/download", content="https://www.facebook.com/watch/?v=1", headers=AUTH)
+        assert r.status_code == 200
+        assert "boom xyz123" in caplog.text  # the real yt-dlp error reached the logs
+    finally:
+        main_mod.app.dependency_overrides[get_settings] = _override_settings
+
+
 def test_status_page_has_download_box():
     # Phones can't "Share to other apps" reliably, so the page must offer a
     # paste-a-link download box (Copy link in FB -> paste here -> Download).
